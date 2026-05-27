@@ -1,0 +1,30 @@
+# Environment & secrets — never commit these
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# VS Code (keep .vscode/settings.json and extensions.json, ignore personal state)
+.vscode/launch.json
+.vscode/*.log
+
+# Audit reports — commit these if you want a history, or leave them local
+# audit_report_*.md
+
+# macOS
+.DS_Store
