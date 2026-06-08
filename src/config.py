@@ -2,6 +2,7 @@
 Central config: page definitions, Confluence coordinates, run constants.
 """
 
+import os
 from datetime import date
 
 TODAY: str = date.today().isoformat()
@@ -16,7 +17,41 @@ SOURCE_SPACES = ["MX", "PE", "CV", "PCS", "ENG"]
 SEARCH_SINCE = "2026-01-01"
 
 # Claude model
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-5"
+
+# ---------------------------------------------------------------------------
+# Slack — channel search source
+# Set SLACK_CHANNELS in .env as a comma-separated list, e.g.:
+#   SLACK_CHANNELS=product-ops,po2-updates,member-growth-team,eng-platform
+# ---------------------------------------------------------------------------
+_slack_channels_env = os.environ.get(
+    "SLACK_CHANNELS",
+    "product-ops,po2-updates,member-growth-team,eng-platform,design-research",
+)
+SLACK_CHANNELS: list[str] = [
+    ch.strip().lstrip("#") for ch in _slack_channels_env.split(",") if ch.strip()
+]
+SLACK_DAYS_BACK: int = int(os.environ.get("SLACK_DAYS_BACK", "21"))
+
+# ---------------------------------------------------------------------------
+# Jira — ticket search source
+# Set JIRA_PROJECT_KEYS in .env as a comma-separated list, e.g.:
+#   JIRA_PROJECT_KEYS=PO,PE,MX,CV
+# Leave blank to search across all projects.
+# ---------------------------------------------------------------------------
+_jira_projects_env = os.environ.get("JIRA_PROJECT_KEYS", "PO,PE,MX,CV,ENG")
+JIRA_PROJECT_KEYS: list[str] = [
+    k.strip() for k in _jira_projects_env.split(",") if k.strip()
+]
+JIRA_DAYS_BACK: int = int(os.environ.get("JIRA_DAYS_BACK", "30"))
+
+# ---------------------------------------------------------------------------
+# Granola — meeting notes source
+# GRANOLA_EXPORT_DIR: folder of exported .md/.json meeting notes (optional).
+#   Defaults to ~/Documents/GranolaExports — create it and drop exports there,
+#   or leave unset to use the Granola local API (app must be running).
+# ---------------------------------------------------------------------------
+GRANOLA_DAYS_BACK: int = int(os.environ.get("GRANOLA_DAYS_BACK", "30"))
 
 # ---------------------------------------------------------------------------
 # Page registry

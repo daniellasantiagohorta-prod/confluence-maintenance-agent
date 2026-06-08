@@ -1,21 +1,40 @@
 """
-Phase 1 — Audit: fetch pages, search for source material, score with Claude.
+Phase 1 — Audit: fetch pages, gather multi-source context, score with Claude.
+
+Sources (all optional, fall back gracefully if not configured):
+  1. Confluence CQL search   — always enabled
+  2. Slack channel search    — requires SLACK_BOT_TOKEN
+  3. Jira ticket search      — uses existing CONFLUENCE_TOKEN
+  4. Granola meeting notes   — uses local Granola API or GRANOLA_EXPORT_DIR
 """
 
 import requests
 
 from src.claude_ai import analyze_page_gaps
-from src.config import SEARCH_SINCE, SOURCE_SPACES, SPACE_KEY, TODAY
+from src.config import (
+    GRANOLA_DAYS_BACK,
+    JIRA_DAYS_BACK,
+    JIRA_PROJECT_KEYS,
+    SEARCH_SINCE,
+    SLACK_CHANNELS,
+    SLACK_DAYS_BACK,
+    SOURCE_SPACES,
+    SPACE_KEY,
+    TODAY,
+)
 from src.confluence import build_page_url, get_page, search_confluence
+from src.granola_connector import search_meeting_notes
+from src.jira_connector import search_jira
+from src.slack_connector import search_slack_channels
 
 
 def run_audit(pages: list[dict]) -> list[dict]:
     """
-    Fetch each page, run CQL searches, ask Claude to score it.
-    Returns one result dict per page (see _make_result for shape).
+    Fetch each page, gather context from all sources, ask Claude to score it.
+    Returns one result dict per page.
     """
     print("\n" + "=" * 70)
-    print("PHASE 1 — AUDIT")
+    print("PHASE 1 — AUDIT  (sources: Confluence, Slack, Jira, Granola)")
     print("=" * 70)
 
     results: list[dict] = []
@@ -38,12 +57,12 @@ def run_audit(pages: list[dict]) -> list[dict]:
         version: int = page_data.get("version", {}).get("number", 1)
         fetched_title: str = page_data.get("title", title)
 
-        search_text = _run_search(page_cfg["keywords"])
+        sources = _gather_sources(page_cfg)
 
         if rule == "SKIP":
             analysis = _skip_analysis()
         else:
-            analysis = analyze_page_gaps(fetched_title, body, search_text)
+            analysis = analyze_page_gaps(fetched_title, body, sources)
 
         print(analysis.get("status", "?"))
         results.append(
@@ -51,6 +70,39 @@ def run_audit(pages: list[dict]) -> list[dict]:
         )
 
     return results
+
+
+def run_targeted_audit(page_cfg: dict, extra_context: str = "") -> dict:
+    """
+    Run a single-page audit, injecting optional extra context (e.g. from a Slack DM).
+    Returns a single result dict.
+    """
+    pid = page_cfg["id"]
+    title = page_cfg["title"]
+    rule = page_cfg["rule"]
+
+    try:
+        page_data = get_page(pid)
+    except requests.HTTPError as exc:
+        return _error_result(page_cfg, str(exc))
+
+    body: str = page_data.get("body", {}).get("storage", {}).get("value", "")
+    version: int = page_data.get("version", {}).get("number", 1)
+    fetched_title: str = page_data.get("title", title)
+
+    sources = _gather_sources(page_cfg)
+
+    if extra_context:
+        sources["direct_input"] = (
+            f"--- Direct update instruction from Slack\n{extra_context}"
+        )
+
+    if rule == "SKIP":
+        analysis = _skip_analysis()
+    else:
+        analysis = analyze_page_gaps(fetched_title, body, sources)
+
+    return _make_result(page_cfg, page_data, body, version, fetched_title, analysis)
 
 
 def print_audit_summary(audit_results: list[dict]) -> None:
@@ -91,10 +143,36 @@ def print_audit_summary(audit_results: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Source gathering
 # ---------------------------------------------------------------------------
 
-def _run_search(keywords: list[str]) -> str:
+def _gather_sources(page_cfg: dict) -> dict[str, str]:
+    """
+    Collect context from all configured sources for one page.
+    Returns a dict of source_name -> formatted_text.
+    Always collects Confluence; Slack/Jira/Granola are best-effort.
+    """
+    keywords = page_cfg["keywords"]
+
+    sources: dict[str, str] = {}
+
+    # 1. Confluence
+    sources["confluence"] = _run_confluence_search(keywords)
+
+    # 2. Slack
+    if SLACK_CHANNELS:
+        sources["slack"] = search_slack_channels(keywords, SLACK_CHANNELS, SLACK_DAYS_BACK)
+
+    # 3. Jira
+    sources["jira"] = search_jira(keywords, JIRA_PROJECT_KEYS, JIRA_DAYS_BACK)
+
+    # 4. Granola meeting notes
+    sources["granola"] = search_meeting_notes(keywords, GRANOLA_DAYS_BACK)
+
+    return sources
+
+
+def _run_confluence_search(keywords: list[str]) -> str:
     spaces_cql = '", "'.join(SOURCE_SPACES)
     keyword_clause = " OR ".join(f'text ~ "{kw}"' for kw in keywords[:3])
     cql = (
@@ -104,12 +182,12 @@ def _run_search(keywords: list[str]) -> str:
     )
     try:
         data = search_confluence(cql, limit=8)
-        return _format_search_results(data)
+        return _format_confluence_results(data)
     except requests.HTTPError:
-        return "(search unavailable)"
+        return "(Confluence search unavailable)"
 
 
-def _format_search_results(search_data: dict) -> str:
+def _format_confluence_results(search_data: dict) -> str:
     results = search_data.get("results", [])
     if not results:
         return "(no recent results found)"
@@ -123,6 +201,10 @@ def _format_search_results(search_data: dict) -> str:
         lines.append(f"--- [{ctitle}]({url})\n{excerpt[:500]}")
     return "\n\n".join(lines)
 
+
+# ---------------------------------------------------------------------------
+# Result constructors
+# ---------------------------------------------------------------------------
 
 def _skip_analysis() -> dict:
     return {
