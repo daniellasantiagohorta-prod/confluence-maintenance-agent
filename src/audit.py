@@ -10,8 +10,9 @@ Sources (all optional, fall back gracefully if not configured):
 
 import requests
 
-from src.claude_ai import analyze_page_gaps
+from src.claude_ai import analyze_competitive_landscape, analyze_page_gaps
 from src.config import (
+    COMPETITOR_NAMES,
     GRANOLA_DAYS_BACK,
     JIRA_DAYS_BACK,
     JIRA_PROJECT_KEYS,
@@ -24,8 +25,12 @@ from src.config import (
 )
 from src.confluence import build_page_url, get_page, search_confluence
 from src.granola_connector import search_meeting_notes
-from src.jira_connector import search_jira
+from src.jira_connector import search_customer_competitive_insights, search_jira
 from src.slack_connector import search_slack_channels
+from src.web_search_connector import search_competitive_web
+
+# Page IDs that receive the full competitive discovery treatment
+_COMPETITIVE_PAGE_IDS: frozenset[str] = frozenset({"3891724617"})
 
 
 def run_audit(pages: list[dict]) -> list[dict]:
@@ -34,7 +39,7 @@ def run_audit(pages: list[dict]) -> list[dict]:
     Returns one result dict per page.
     """
     print("\n" + "=" * 70)
-    print("PHASE 1 — AUDIT  (sources: Confluence, Slack, Jira, Granola)")
+    print("PHASE 1 — AUDIT  (sources: Confluence, Slack, Jira, Granola, Web)")
     print("=" * 70)
 
     results: list[dict] = []
@@ -61,6 +66,8 @@ def run_audit(pages: list[dict]) -> list[dict]:
 
         if rule == "SKIP":
             analysis = _skip_analysis()
+        elif page_cfg["id"] in _COMPETITIVE_PAGE_IDS:
+            analysis = analyze_competitive_landscape(fetched_title, body, sources)
         else:
             analysis = analyze_page_gaps(fetched_title, body, sources)
 
@@ -99,6 +106,8 @@ def run_targeted_audit(page_cfg: dict, extra_context: str = "") -> dict:
 
     if rule == "SKIP":
         analysis = _skip_analysis()
+    elif page_cfg["id"] in _COMPETITIVE_PAGE_IDS:
+        analysis = analyze_competitive_landscape(fetched_title, body, sources)
     else:
         analysis = analyze_page_gaps(fetched_title, body, sources)
 
@@ -150,24 +159,37 @@ def _gather_sources(page_cfg: dict) -> dict[str, str]:
     """
     Collect context from all configured sources for one page.
     Returns a dict of source_name -> formatted_text.
-    Always collects Confluence; Slack/Jira/Granola are best-effort.
+
+    Competitive Landscape pages additionally pull from:
+      5. External web search (Brave / SerpAPI / domain scrape)
+      6. Jira customer competitive signals (feature-parity, win-loss labels)
     """
     keywords = page_cfg["keywords"]
+    is_competitive = page_cfg["id"] in _COMPETITIVE_PAGE_IDS
 
     sources: dict[str, str] = {}
 
     # 1. Confluence
     sources["confluence"] = _run_confluence_search(keywords)
 
-    # 2. Slack
+    # 2. Slack (broader keyword set for competitive pages to catch competitor mentions)
     if SLACK_CHANNELS:
-        sources["slack"] = search_slack_channels(keywords, SLACK_CHANNELS, SLACK_DAYS_BACK)
+        slack_keywords = keywords + COMPETITOR_NAMES[:6] if is_competitive else keywords
+        sources["slack"] = search_slack_channels(slack_keywords, SLACK_CHANNELS, SLACK_DAYS_BACK)
 
-    # 3. Jira
+    # 3. Jira (standard ticket search)
     sources["jira"] = search_jira(keywords, JIRA_PROJECT_KEYS, JIRA_DAYS_BACK)
 
     # 4. Granola meeting notes
     sources["granola"] = search_meeting_notes(keywords, GRANOLA_DAYS_BACK)
+
+    # 5 & 6. Competitive-only sources
+    if is_competitive:
+        print(" [web+customer discovery]", end="", flush=True)
+        sources["web"] = search_competitive_web()
+        sources["customer_competitive"] = search_customer_competitive_insights(
+            COMPETITOR_NAMES, JIRA_PROJECT_KEYS, JIRA_DAYS_BACK * 3
+        )
 
     return sources
 

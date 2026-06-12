@@ -1,21 +1,41 @@
 # Confluence Maintenance Agent
 
-Audits and maintains Spring Health's Product Operations (PO2) Confluence space.
+Keeps Spring Health's Product Operations (PO2) Confluence space accurate and up to date by pulling signals from **Confluence, Slack, Jira, and Granola meeting notes**, and by accepting direct update instructions over Slack DMs.
+
 Targets L1 (Product Foundations) and L2 (Domain Context) pages.
+
+---
 
 ## What it does
 
+### Sources it reads from
+
+| Source | What it looks for | Credential needed |
+|--------|-------------------|-------------------|
+| Confluence | Recent pages in MX, PE, CV, PCS, ENG spaces | `CONFLUENCE_TOKEN` (already required) |
+| Slack | Channel messages mentioning each page's keywords | `SLACK_BOT_TOKEN` |
+| Jira | Open tickets updated in the last 30 days | `CONFLUENCE_TOKEN` (same Atlassian token) |
+| Granola | Meeting notes via local app API or export folder | None (app must be running) |
+| Direct input | Explicit context via `--direct` CLI or Slack DM | — |
+
+All sources are optional and fail gracefully — the agent runs with whatever is configured.
+
+### Three-phase pipeline
+
 | Phase | Action | SKIP pages | REVIEW pages |
 |-------|--------|------------|--------------|
-| 1 — Audit | Fetch pages + Claude gap analysis | Scored, no fills | Full gap + fill analysis |
+| 1 — Audit | Fetch pages + multi-source context + Claude gap analysis | Scored, no fills | Full gap + fill analysis |
 | 2 — Panels | Inject status panel at top of every page | Panel only | Panel only |
 | 3 — Fills | Replace `[TO FILL]` markers | Never touched | HIGH confidence auto-filled |
 
 **Safety rules:**
-- `SKIP` pages (Product Vision & Strategy, Product Principles) never have body content modified — info panel only.
+- `SKIP` pages (Product Vision & Strategy, Product Principles) never have body content modified.
 - `MEDIUM` confidence fills are surfaced in the report but never written automatically.
 - `LOW` confidence fills are left as `[TO FILL]`.
 - `--dry-run` makes zero Confluence API write calls.
+- `direct_input` context (from `--direct` or Slack DMs) is treated as HIGH confidence.
+
+---
 
 ## Setup
 
@@ -30,7 +50,7 @@ brew install python@3.11
 
 ```bash
 cd confluence-maintenance-agent
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -55,52 +75,100 @@ export $(grep -v '^#' .env | xargs)
 
 Or use [direnv](https://direnv.net/) to load `.env` automatically when you `cd` into the folder.
 
-Get credentials here:
-- **Confluence token:** https://id.atlassian.com/manage-profile/security/api-tokens
-- **Anthropic API key:** https://console.anthropic.com/settings/keys
+**Minimum required:**
+- `CONFLUENCE_EMAIL` + `CONFLUENCE_TOKEN` — Atlassian API token from [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens)
+- `ANTHROPIC_API_KEY` — from [console.anthropic.com](https://console.anthropic.com/settings/keys)
+
+**Slack (enables channel search + bot DM mode):**
+- Create a Slack App at [api.slack.com/apps](https://api.slack.com/apps)
+- Bot Token Scopes: `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `chat:write`
+- For `--listen` mode: enable Socket Mode and generate an App-Level Token with `connections:write`
+- Set `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in `.env`
+- Invite the bot to each channel in `SLACK_CHANNELS` with `/invite @your-bot`
+
+---
 
 ## Usage
 
+### Batch audit (recommended starting point)
+
 ```bash
-# Always start here — full audit, zero writes, generates audit_report_YYYY-MM-DD.md
+# Full audit across all sources, zero writes, generates report
 python main.py --dry-run
 
 # After reviewing the report, run live
 python main.py
 
-# Run specific phases only
-python main.py --phase 1        # audit only, writes report, stops
-python main.py --phase 2        # info panels only (safe)
+# Individual phases
+python main.py --phase 1        # audit + report only
+python main.py --phase 2        # status panels only
 python main.py --phase 3        # gap fills only
 
-# Target specific pages by ID
+# Restrict to specific pages
 python main.py --dry-run --pages 3890610497 3896967190
 ```
+
+### Direct update (one-shot injection)
+
+Feed an explicit change directly into the agent without waiting for the next scheduled run:
+
+```bash
+python main.py --direct "update Feature Registry: dark mode launched for members on 2026-05-30"
+python main.py --direct "North Star Metrics: Q2 MAU target revised to 450k per Thursday OKR review"
+python main.py --dry-run --direct "update Competitive Landscape: Lyra Health raised Series D"
+```
+
+The agent matches the instruction to the right page(s), injects it as HIGH-confidence context, runs a targeted audit, and applies fills.
+
+### Slack bot (persistent listener)
+
+```bash
+# Start the bot — blocks until Ctrl+C
+python main.py --listen
+
+# Dry-run mode (reads Slack DMs, never writes Confluence)
+python main.py --listen --dry-run
+```
+
+Once running, DM the bot on Slack:
+
+| Command | What it does |
+|---------|-------------|
+| `update Feature Registry: dark mode launched 2026-05-30` | Injects context, runs targeted update |
+| `check Competitive Landscape` | Runs a fresh audit on that page |
+| `status` | Returns the last audit summary |
+| `list` | Lists all 11 tracked pages |
+| `help` | Shows usage |
+
+---
 
 ## Project structure
 
 ```
 confluence-maintenance-agent/
-├── main.py               # CLI entry point
+├── main.py                   # CLI entry point (--dry-run, --phase, --direct, --listen)
 ├── requirements.txt
-├── .env.example          # copy to .env, fill in credentials
+├── .env.example              # copy to .env, fill in credentials
 ├── .gitignore
-├── .vscode/
-│   ├── settings.json     # Python interpreter, formatter
-│   └── extensions.json   # Recommended VS Code extensions
 └── src/
-    ├── config.py         # Page registry, constants, Claude model
-    ├── confluence.py     # Confluence REST API client
-    ├── claude_ai.py      # Claude gap-analysis prompt + response parsing
-    ├── panels.py         # Storage-format XML panel builder + body injector
-    ├── audit.py          # Phase 1: fetch, search, score
-    ├── fills.py          # Phase 2: panel updates / Phase 3: gap fills
-    └── report.py         # Markdown audit report generator
+    ├── config.py             # Page registry, Slack channels, Jira projects, constants
+    ├── confluence.py         # Confluence REST API client
+    ├── slack_connector.py    # Slack channel search
+    ├── jira_connector.py     # Jira ticket search (uses Atlassian token)
+    ├── granola_connector.py  # Granola meeting notes (local API + export folder)
+    ├── slack_bot.py          # Slack Bolt bot for DM-driven updates
+    ├── claude_ai.py          # Multi-source Claude prompt + response parsing
+    ├── audit.py              # Phase 1: fetch, gather all sources, score
+    ├── fills.py              # Phase 2: panels / Phase 3: gap fills
+    ├── panels.py             # Confluence panel XML builder
+    └── report.py             # Markdown audit report generator
 ```
+
+---
 
 ## Page registry
 
-Pages are defined in [src/config.py](src/config.py). Add, remove, or update pages there.
+Defined in [src/config.py](src/config.py).
 
 | Page | ID | Level | Rule |
 |------|----|-------|------|
@@ -116,19 +184,14 @@ Pages are defined in [src/config.py](src/config.py). Add, remove, or update page
 | Data Model Overview | 3897655332 | L2 | REVIEW |
 | Integration Map | 3896115318 | L2 | REVIEW |
 
-## Output
+---
 
-After every run, `audit_report_YYYY-MM-DD.md` is written to the project root with:
-- Per-page status scores and gap lists
-- Proposed fills with confidence levels and sources
-- Full change log (phase 2 panels + phase 3 fills)
-- Remaining `[TO FILL]` items grouped by page
+## Granola integration
 
-## Phase 2 expansion (coming)
+The Granola desktop app exposes a local HTTP API on port 1618. The agent queries it automatically when Granola is running — no configuration needed.
 
-Additional source connectors planned:
-1. **Google Drive** — search for matching Spring Health docs
-2. **Slack** — surface recent mentions from `#product-ops`, `#member-growth-team`, etc.
-3. **Meeting notes** — extract decisions and action items from Drive meeting notes
-
-Each new source will apply a confidence penalty before any auto-fill is allowed.
+If you'd rather not keep Granola open, export notes from Granola and set:
+```
+GRANOLA_EXPORT_DIR=/path/to/your/exports
+```
+The agent will scan that folder for `.md` and `.json` files.

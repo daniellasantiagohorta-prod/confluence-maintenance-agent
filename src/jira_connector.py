@@ -82,6 +82,86 @@ def search_jira(
     return "\n".join(lines)
 
 
+def search_customer_competitive_insights(
+    competitor_names: list[str],
+    project_keys: list[str],
+    days_back: int = 90,
+    max_results: int = 15,
+) -> str:
+    """
+    Search Jira for customer-reported competitive gaps, feature requests,
+    and win/loss signals.
+
+    Looks for issues with:
+    - Labels: customer-request, competitor, feature-parity, win-loss, churn
+    - Summaries/descriptions mentioning competitor names
+    Returns formatted text for Claude context.
+    """
+    headers = _auth_headers()
+    if not headers:
+        return "(Jira credentials not configured)"
+
+    competitor_text_clause = " OR ".join(
+        f'text ~ "{name}"' for name in competitor_names[:8]
+    )
+    label_clause = (
+        'labels in ("customer-request", "competitor", "feature-parity", '
+        '"win-loss", "churn", "feature-request", "enterprise-feedback")'
+    )
+
+    parts: list[str] = []
+    if project_keys:
+        projects = ", ".join(f'"{k}"' for k in project_keys)
+        parts.append(f"project in ({projects})")
+    parts.append(f"updated >= -{days_back}d")
+    parts.append(f"({label_clause} OR ({competitor_text_clause}))")
+
+    jql = " AND ".join(parts) + " ORDER BY updated DESC"
+
+    try:
+        resp = requests.get(
+            f"{_JIRA_BASE}/search",
+            headers=headers,
+            params={
+                "jql": jql,
+                "maxResults": max_results,
+                "fields": "summary,status,assignee,description,updated,issuetype,priority,labels,comment",
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        return f"(Jira customer insights search failed: {exc})"
+    except requests.RequestException:
+        return "(Jira search unavailable)"
+
+    issues = resp.json().get("issues", [])
+    if not issues:
+        return "(no customer competitive insights found in Jira)"
+
+    lines: list[str] = []
+    for issue in issues:
+        key = issue.get("key", "")
+        fields = issue.get("fields", {})
+        summary = fields.get("summary", "")
+        status = fields.get("status", {}).get("name", "")
+        issue_type = fields.get("issuetype", {}).get("name", "")
+        updated = (fields.get("updated") or "")[:10]
+        url = f"{_BROWSE_BASE}/{key}"
+        labels = fields.get("labels") or []
+        label_str = f"  labels: {', '.join(labels)}" if labels else ""
+
+        lines.append(f"--- [{key}] [{issue_type}] {summary}")
+        lines.append(f"  status: {status} | updated: {updated}{label_str}")
+
+        desc_text = _extract_description(fields.get("description"))
+        if desc_text:
+            lines.append(f"  {desc_text[:400]}")
+        lines.append(f"  {url}")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

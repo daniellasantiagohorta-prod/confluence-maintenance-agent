@@ -30,16 +30,12 @@ def _auth_headers() -> dict:
     }
 
 
-# Build once at import time so every call shares the same headers object.
-HEADERS = _auth_headers()
-
-
 def get_page(page_id: str) -> dict:
     """Return full page dict including body.storage and version."""
     resp = requests.get(
         f"{BASE_URL}/content/{page_id}",
         params={"expand": "body.storage,version,title"},
-        headers=HEADERS,
+        headers=_auth_headers(),
         timeout=30,
     )
     resp.raise_for_status()
@@ -61,7 +57,7 @@ def update_page(page_id: str, title: str, new_body: str, current_version: int) -
     }
     resp = requests.put(
         f"{BASE_URL}/content/{page_id}",
-        headers=HEADERS,
+        headers=_auth_headers(),
         data=json.dumps(payload),
         timeout=30,
     )
@@ -78,7 +74,7 @@ def search_confluence(cql: str, limit: int = 10) -> dict:
             "limit": limit,
             "expand": "content.body.storage,content.metadata.labels",
         },
-        headers=HEADERS,
+        headers=_auth_headers(),
         timeout=30,
     )
     resp.raise_for_status()

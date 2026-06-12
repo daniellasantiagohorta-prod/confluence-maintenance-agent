@@ -17,7 +17,7 @@ SOURCE_SPACES = ["MX", "PE", "CV", "PCS", "ENG"]
 SEARCH_SINCE = "2026-01-01"
 
 # Claude model
-CLAUDE_MODEL = "claude-sonnet-4-5"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # ---------------------------------------------------------------------------
 # Slack — channel search source
@@ -52,6 +52,32 @@ JIRA_DAYS_BACK: int = int(os.environ.get("JIRA_DAYS_BACK", "30"))
 #   or leave unset to use the Granola local API (app must be running).
 # ---------------------------------------------------------------------------
 GRANOLA_DAYS_BACK: int = int(os.environ.get("GRANOLA_DAYS_BACK", "30"))
+
+# ---------------------------------------------------------------------------
+# Competitive intelligence — used for Competitive Landscape page enrichment
+#
+# COMPETITOR_NAMES: comma-separated in env, or override COMPETITOR_DOMAINS below.
+# BRAVE_SEARCH_API_KEY: Brave Search (free tier 2k req/mo) → https://api.search.brave.com
+# SERP_API_KEY: SerpAPI (paid) → https://serpapi.com
+# If neither key is set, the agent falls back to scraping COMPETITOR_DOMAINS URLs.
+# ---------------------------------------------------------------------------
+_competitor_names_env = os.environ.get(
+    "COMPETITOR_NAMES",
+    "Lyra Health,Modern Health,Headspace Health,Talkspace,BetterHelp,Brightside,ComPsych",
+)
+COMPETITOR_NAMES: list[str] = [
+    n.strip() for n in _competitor_names_env.split(",") if n.strip()
+]
+
+COMPETITOR_DOMAINS: dict[str, str] = {
+    "Lyra Health": "https://www.lyrahealth.com",
+    "Modern Health": "https://www.modernhealth.com",
+    "Headspace Health": "https://www.headspace.com/work",
+    "Talkspace": "https://business.talkspace.com",
+    "BetterHelp": "https://www.betterhelp.com/online-therapy",
+    "Brightside": "https://www.brightside.com",
+    "ComPsych": "https://www.compsych.com",
+}
 
 # ---------------------------------------------------------------------------
 # Page registry
@@ -93,7 +119,13 @@ PAGES: list[dict] = [
         "title": "Competitive Landscape",
         "level": "L1",
         "rule": "REVIEW",
-        "keywords": ["competitor", "competitive", "market", "landscape"],
+        "keywords": [
+            "competitor", "competitive", "market", "landscape",
+            "Lyra Health", "Modern Health", "Headspace", "Talkspace",
+            "BetterHelp", "Brightside", "ComPsych",
+            "win loss", "feature parity", "differentiation",
+            "customer request", "why we lost", "why we won",
+        ],
     },
     {
         "id": "3891560725",
